@@ -89,3 +89,18 @@ if __name__ == "__main__":
 def home():
     return "Market AI is running successfully 🚀"
 
+
+@app.route("/predict", methods=["POST"])
+def predict():
+    data = request.json
+    
+    # Example: expecting features as a list
+    features = np.array(data["features"]).reshape(1, -1)
+    
+    model = joblib.load("market_model.pkl")
+    prediction = model.predict(features)
+    
+    return jsonify({
+        "prediction": prediction.tolist()
+    })
+
