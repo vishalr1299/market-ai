@@ -1,0 +1,85 @@
+from flask import Flask, request, jsonify
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import joblib
+
+app = Flask(__name__)
+
+model = joblib.load("market_model.pkl")
+
+def calculate_indicators(data):
+
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+
+    data["EMA20"] = data["Close"].ewm(span=20).mean()
+    data["EMA50"] = data["Close"].ewm(span=50).mean()
+
+    delta = data["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+
+    rs = avg_gain / avg_loss
+    data["RSI"] = 100 - (100 / (1 + rs))
+
+    ema12 = data["Close"].ewm(span=12).mean()
+    ema26 = data["Close"].ewm(span=26).mean()
+    data["MACD"] = ema12 - ema26
+
+    high_low = data["High"] - data["Low"]
+    high_close = np.abs(data["High"] - data["Close"].shift())
+    low_close = np.abs(data["Low"] - data["Close"].shift())
+
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    data["ATR"] = true_range.rolling(14).mean()
+
+    data["Volume_Change"] = data["Volume"].pct_change()
+
+    return data.dropna()
+
+@app.route("/predict")
+def predict():
+
+    ticker = request.args.get("ticker")
+
+    if not ticker:
+        return jsonify({"error": "Ticker required"})
+
+    try:
+        data = yf.download(ticker, period="6mo", auto_adjust=True)
+        data = calculate_indicators(data)
+
+        features = ["RSI","EMA20","EMA50","MACD","ATR","Volume_Change"]
+        latest = data.iloc[-1:]
+
+        prediction = model.predict(latest[features])[0]
+        price = float(data["Close"].iloc[-1])
+
+        if latest["RSI"].values[0] < 30:
+            reason = "RSI indicates oversold condition."
+        elif latest["RSI"].values[0] > 70:
+            reason = "RSI indicates overbought condition."
+        elif latest["EMA20"].values[0] > latest["EMA50"].values[0]:
+            reason = "EMA20 above EMA50 (bullish signal)."
+        else:
+            reason = "Mixed technical indicators."
+
+        trend = "UP" if prediction == 1 else "DOWN"
+
+        return jsonify({
+            "ticker": ticker,
+            "price": round(price,2),
+            "prediction": trend,
+            "reason": reason
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
